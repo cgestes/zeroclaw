@@ -10756,6 +10756,7 @@ async fn async_main_inner(command: clap::Command) -> Result<()> {
                 let canvas_store_for_gateway = canvas_store_for_gateway.clone();
                 let canvas_store_for_channels = canvas_store_for_channels.clone();
                 let mut registry = daemon::DaemonRegistry::new();
+                registry.set_canvas_store(canvas_store_for_gateway.clone());
                 #[cfg(feature = "agent-runtime")]
                 registry.register_channel_registry_clearer(std::sync::Arc::new(|| {
                     zeroclaw_channels::orchestrator::prepare_live_channel_registry(true);

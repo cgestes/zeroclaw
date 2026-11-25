@@ -55,6 +55,38 @@ pub enum HookResult<T> {
     Cancel(String),
 }
 
+/// What happened to a watched file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FileChangeKind {
+    /// The file was created or modified (it exists after the change).
+    Changed,
+    /// The file was removed or renamed away.
+    Removed,
+}
+
+impl FileChangeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Changed => "changed",
+            Self::Removed => "removed",
+        }
+    }
+}
+
+/// One debounced change observed by a `[file_watchers.<name>]` watcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChangeEvent {
+    /// The watcher's configured name.
+    pub watcher: String,
+    /// The watched root directory.
+    pub root: std::path::PathBuf,
+    /// Absolute path of the changed file.
+    pub path: std::path::PathBuf,
+    /// Path relative to `root`, `/`-separated.
+    pub rel_path: String,
+    pub kind: FileChangeKind,
+}
+
 impl<T> HookResult<T> {
     pub fn is_cancel(&self) -> bool {
         matches!(self, HookResult::Cancel(_))
@@ -130,6 +162,9 @@ pub trait HookHandler: Send + Sync {
     async fn on_tool_call_abandoned(&self, _context: &ToolCallHookContext, _tool: &str) {}
     async fn on_message_sent(&self, _channel: &str, _recipient: &str, _content: &str) {}
     async fn on_heartbeat_tick(&self) {}
+    /// Observe a debounced file change from a `[file_watchers.<name>]`
+    /// watcher. Fired once per changed file, after the quiet period.
+    async fn on_file_changed(&self, _event: &FileChangeEvent) {}
 
     // --- Modifying hooks (sequential by priority, can cancel) ---
     async fn before_model_resolve(

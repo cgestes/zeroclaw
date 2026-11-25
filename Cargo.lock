@@ -14603,6 +14603,7 @@ dependencies = [
  "lru 0.18.4",
  "mime_guess",
  "nanohtml2text",
+ "notify",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-proto",

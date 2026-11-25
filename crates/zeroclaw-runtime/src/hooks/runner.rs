@@ -65,6 +65,7 @@ impl HookRunner {
                     if config.hooks.builtin.command_logger {
                         runner.register(Box::new(super::builtin::CommandLoggerHook::new()));
                     }
+                    runner.register_command_hook(&config.hooks);
                     ::zeroclaw_log::record!(
                         ERROR,
                         ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
@@ -93,6 +94,7 @@ impl HookRunner {
         if hooks.builtin.command_logger {
             runner.register(Box::new(super::builtin::CommandLoggerHook::new()));
         }
+        runner.register_command_hook(hooks);
         if hooks.builtin.webhook_audit.enabled {
             match super::builtin::WebhookAuditHook::new_with_nat64_prefixes(
                 hooks.builtin.webhook_audit.clone(),
@@ -114,6 +116,27 @@ impl HookRunner {
             }
         }
         runner
+    }
+
+    fn register_command_hook(&mut self, hooks: &zeroclaw_config::schema::HooksConfig) {
+        if !hooks.builtin.command_hook.enabled {
+            return;
+        }
+        match super::builtin::CommandHook::new(hooks.builtin.command_hook.clone()) {
+            Ok(hook) => self.register(Box::new(hook)),
+            Err(error) => {
+                ::zeroclaw_log::record!(
+                    ERROR,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                        .with_attrs(::serde_json::json!({
+                            "hook": "command-hook",
+                            "error": error,
+                        })),
+                    "command hook configuration is invalid; hook disabled"
+                );
+            }
+        }
     }
 
     /// Register a handler and re-sort by descending priority.
@@ -283,6 +306,15 @@ impl HookRunner {
             .handlers
             .iter()
             .map(|h| h.on_heartbeat_tick())
+            .collect();
+        join_all(futs).await;
+    }
+
+    pub async fn fire_file_changed(&self, event: &zeroclaw_api::hook::FileChangeEvent) {
+        let futs: Vec<_> = self
+            .handlers
+            .iter()
+            .map(|h| h.on_file_changed(event))
             .collect();
         join_all(futs).await;
     }
@@ -1517,6 +1549,7 @@ mod tests {
             builtin: zeroclaw_config::schema::BuiltinHooksConfig {
                 command_logger: false,
                 webhook_audit: zeroclaw_config::schema::WebhookAuditConfig::default(),
+                command_hook: Default::default(),
             },
         };
         let runner = HookRunner::from_config(&config);
@@ -1533,6 +1566,7 @@ mod tests {
             builtin: zeroclaw_config::schema::BuiltinHooksConfig {
                 command_logger: true,
                 webhook_audit: zeroclaw_config::schema::WebhookAuditConfig::default(),
+                command_hook: Default::default(),
             },
         };
         let runner = HookRunner::from_config(&config);
@@ -1554,6 +1588,7 @@ mod tests {
                     url: "http://example.com/audit".to_string(),
                     ..Default::default()
                 },
+                command_hook: Default::default(),
             },
         };
 
