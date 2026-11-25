@@ -271,7 +271,7 @@ fn glob_matches(pattern: &str, text: &str) -> bool {
 }
 
 /// Returns true if `tool` matches any of the given glob patterns.
-fn matches_any_pattern(patterns: &[String], tool: &str) -> bool {
+pub(crate) fn matches_any_pattern(patterns: &[String], tool: &str) -> bool {
     patterns.iter().any(|p| glob_matches(p, tool))
 }
 

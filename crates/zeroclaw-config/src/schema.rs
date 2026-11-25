@@ -640,6 +640,14 @@ pub struct Config {
     #[group = "Agent"]
     pub hooks: HooksConfig,
 
+    /// Named file watchers (`[file_watchers.<name>]`). Each entry watches a
+    /// directory tree from the daemon, debounces changes, fires the
+    /// `on_file_changed` lifecycle hook, and runs its built-in actions
+    /// (e.g. mirroring documents to the live canvas).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[nested]
+    pub file_watchers: HashMap<String, FileWatcherConfig>,
+
     /// Hardware configuration (wizard-driven physical world setup).
     #[serde(default)]
     #[nested]
@@ -14324,6 +14332,99 @@ fn default_otel_tool_io_max_chars() -> usize {
     1000
 }
 
+// ── File watchers ────────────────────────────────────────────────
+
+/// Named file watcher (`[file_watchers.<name>]`).
+///
+/// The daemon watches `path` recursively. Changes to files matching
+/// `include` (and not `exclude`) are debounced for `debounce_ms`, then:
+/// the `on_file_changed` lifecycle hook fires for every changed file, and the
+/// watcher's built-in actions run (see [`FileWatcherCanvasConfig`]).
+/// Hidden path components (e.g. `.git/`) are always ignored.
+#[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[prefix = "file_watcher"]
+#[serde(default)]
+pub struct FileWatcherConfig {
+    /// Enable this watcher. Default: `true`.
+    pub enabled: bool,
+    /// Absolute directory to watch (recursively). `~/` is expanded.
+    pub path: String,
+    /// Glob patterns (relative to `path`) a file must match. Default: `["**/*"]`.
+    pub include: Vec<String>,
+    /// Glob patterns (relative to `path`) that exclude a file.
+    pub exclude: Vec<String>,
+    /// Quiet period after the last change before the batch is processed.
+    /// Default: `1000`.
+    pub debounce_ms: u64,
+    /// Process every existing file once when the watcher starts, so
+    /// in-memory targets (like the canvas) are rebuilt after a restart.
+    /// Lifecycle hooks are not fired for this initial pass. Default: `true`.
+    pub sync_on_start: bool,
+    /// Mirror matching documents to the live canvas.
+    #[nested]
+    pub canvas: FileWatcherCanvasConfig,
+}
+
+impl Default for FileWatcherConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            path: String::new(),
+            include: vec!["**/*".to_string()],
+            exclude: Vec::new(),
+            debounce_ms: 1000,
+            sync_on_start: true,
+            canvas: FileWatcherCanvasConfig::default(),
+        }
+    }
+}
+
+/// Canvas mirror action for a file watcher
+/// (`[file_watchers.<name>.canvas]`).
+///
+/// Each file is pushed to the canvas whose id is its path relative to the
+/// watched root, without extension, `/` replaced by `-`; a folder `README`
+/// maps to the folder name, the root `README` to `<index_canvas_id>-readme`.
+/// Removed files clear their canvas. An index canvas lists every document.
+#[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[prefix = "file_watcher.canvas"]
+#[serde(default)]
+pub struct FileWatcherCanvasConfig {
+    /// Enable the canvas mirror. Default: `false`.
+    pub enabled: bool,
+    /// Canvas content type: `markdown`, `html`, `svg` or `text`.
+    /// Default: `markdown`.
+    pub content_type: String,
+    /// Canvas id of the generated index (empty = no index). Default: empty.
+    pub index_canvas_id: String,
+    /// Base URL where the source documents can be opened/edited (e.g. a
+    /// SilverBullet or wiki instance). When set, relative `.md` links are
+    /// rewritten to `<link_base_url><path-without-.md>`. Default: empty.
+    pub link_base_url: String,
+    /// Line inserted under the document's first `# ` heading. Placeholders:
+    /// `{path}` (root folder name + relative path), `{rel_path}`, `{synced}`
+    /// (local `YYYY-MM-DD HH:MM`), `{url}` (source URL, empty without
+    /// `link_base_url`). Empty = no header. Default: empty.
+    pub header_template: String,
+    /// Skip near-empty stub documents (nothing but a heading). Default: `true`.
+    pub skip_stubs: bool,
+}
+
+impl Default for FileWatcherCanvasConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            content_type: "markdown".to_string(),
+            index_canvas_id: String::new(),
+            link_base_url: String::new(),
+            header_template: String::new(),
+            skip_stubs: true,
+        }
+    }
+}
+
 // ── Hooks ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
@@ -14364,6 +14465,67 @@ pub struct BuiltinHooksConfig {
     #[serde(default)]
     #[nested]
     pub webhook_audit: WebhookAuditConfig,
+    /// Configuration for the debounced command hook.
+    ///
+    /// When enabled, runs a local shell command once matching tool calls
+    /// have stopped for `debounce_secs` (hysteresis), e.g. to auto-commit.
+    #[serde(default)]
+    #[nested]
+    pub command_hook: CommandHookConfig,
+}
+
+/// Configuration for the debounced command builtin hook.
+///
+/// Every successful tool call whose name matches `tool_patterns` (re)arms a
+/// timer. When no further matching call happens for `debounce_secs`, `command`
+/// runs once via `sh -c`, fire-and-forget, with `ZEROCLAW_HOOK_TOOLS` set to
+/// the comma-separated tool names seen since the last run. Runs never overlap.
+#[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[prefix = "hooks.builtin.command_hook"]
+pub struct CommandHookConfig {
+    /// Enable the command hook. Default: `false`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Shell command executed with `sh -c` after the quiet period.
+    #[serde(default)]
+    pub command: String,
+    /// Glob patterns for tool names that arm the timer (e.g. `["file_*"]`).
+    /// An empty list means no tool arms it.
+    #[serde(default)]
+    pub tool_patterns: Vec<String>,
+    /// Glob patterns for file-watcher names (`[file_watchers.<name>]`) whose
+    /// change events also arm the timer. Matching events are exported as
+    /// `watch:<name>` in `ZEROCLAW_HOOK_TOOLS`. Empty = file events ignored.
+    #[serde(default)]
+    pub file_watcher_patterns: Vec<String>,
+    /// Quiet period in seconds after the last matching tool call. Default: `120`.
+    #[serde(default = "default_command_hook_debounce_secs")]
+    pub debounce_secs: u64,
+    /// Kill the command if it runs longer than this many seconds. Default: `300`.
+    #[serde(default = "default_command_hook_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+fn default_command_hook_debounce_secs() -> u64 {
+    120
+}
+
+fn default_command_hook_timeout_secs() -> u64 {
+    300
+}
+
+impl Default for CommandHookConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            command: String::new(),
+            tool_patterns: Vec::new(),
+            file_watcher_patterns: Vec::new(),
+            debounce_secs: default_command_hook_debounce_secs(),
+            timeout_secs: default_command_hook_timeout_secs(),
+        }
+    }
 }
 
 /// Configuration for the webhook-audit builtin hook.
@@ -22414,6 +22576,7 @@ impl Default for Config {
             mcp_bundles: HashMap::new(),
             peer_groups: HashMap::new(),
             hooks: HooksConfig::default(),
+            file_watchers: HashMap::new(),
             hardware: HardwareConfig::default(),
             query_classification: QueryClassificationConfig::default(),
             transcription: TranscriptionConfig::default(),
@@ -36201,6 +36364,7 @@ auto_save = true
             mcp_bundles: HashMap::new(),
             peer_groups: HashMap::new(),
             hooks: HooksConfig::default(),
+            file_watchers: HashMap::new(),
             hardware: HardwareConfig::default(),
             transcription: TranscriptionConfig::default(),
             tts: TtsConfig::default(),
@@ -37666,6 +37830,7 @@ default_temperature = 0.7
             mcp_bundles: HashMap::new(),
             peer_groups: HashMap::new(),
             hooks: HooksConfig::default(),
+            file_watchers: HashMap::new(),
             hardware: HardwareConfig::default(),
             transcription: TranscriptionConfig::default(),
             tts: TtsConfig::default(),

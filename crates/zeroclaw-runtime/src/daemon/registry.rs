@@ -146,6 +146,9 @@ pub struct DaemonRegistry {
     sop_engine: Option<Arc<std::sync::Mutex<crate::sop::SopEngine>>>,
     sop_audit: Option<Arc<crate::sop::SopAuditLogger>>,
     sop_driver_handles: Option<crate::sop::SopDriverHandles>,
+    /// Shared live-canvas store, so daemon-level producers (file watchers)
+    /// render into the same canvases the gateway serves.
+    canvas_store: Option<crate::tools::CanvasStore>,
 }
 
 /// The SOP wiring one daemon generation hands from `main` into the RPC
@@ -167,6 +170,15 @@ impl DaemonRegistry {
     pub fn register_gateway(&mut self, starter: GatewayStarter) -> &mut Self {
         self.gateway_start = Some(starter);
         self
+    }
+
+    pub fn set_canvas_store(&mut self, store: crate::tools::CanvasStore) -> &mut Self {
+        self.canvas_store = Some(store);
+        self
+    }
+
+    pub(crate) fn canvas_store(&self) -> Option<crate::tools::CanvasStore> {
+        self.canvas_store.clone()
     }
 
     #[cfg(test)]

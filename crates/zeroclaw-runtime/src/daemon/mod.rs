@@ -1312,6 +1312,23 @@ pub async fn run_with_authority(
 
     let daemon_execution_capability = live_config_authority.execution_capability();
 
+    // File watchers: one task per enabled `[file_watchers.<name>]`. They
+    // share the gateway's canvas store and fire `on_file_changed` through a
+    // daemon-level hook runner. Config changes apply on the next reload.
+    if config.file_watchers.values().any(|w| w.enabled) {
+        let watcher_hooks = config
+            .hooks
+            .enabled
+            .then(|| std::sync::Arc::new(crate::hooks::HookRunner::from_config(&config.hooks)));
+        handles.extend(crate::file_watch::spawn_all(
+            &config.file_watchers,
+            registry.canvas_store(),
+            watcher_hooks,
+            channels_cancel.clone(),
+        ));
+        crate::health::mark_component_ok("file_watchers");
+    }
+
     if config.heartbeat.enabled {
         let heartbeat_cfg = config.clone();
         let heartbeat_execution_capability = daemon_execution_capability.clone();
