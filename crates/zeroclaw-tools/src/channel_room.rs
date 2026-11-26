@@ -113,6 +113,10 @@ impl Tool for ChannelRoomTool {
                     "type": "string",
                     "description": tool_msg("tool-channel-room-param-room-id")
                 },
+                "parent_room_id": {
+                    "type": "string",
+                    "description": tool_msg("tool-channel-room-param-parent-room-id")
+                },
                 "user_id": {
                     "type": "string",
                     "description": tool_msg("tool-channel-room-param-user-id")
@@ -280,6 +284,7 @@ fn room_creation_options(args: &serde_json::Value) -> anyhow::Result<RoomCreatio
         invites,
         visibility,
         encryption: optional_bool(args, "encryption")?,
+        parent: optional_string(args, "parent_room_id")?.map(str::to_string),
     })
 }
 

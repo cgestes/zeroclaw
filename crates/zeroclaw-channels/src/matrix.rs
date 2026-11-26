@@ -8633,6 +8633,7 @@ mod tests {
                 invites: vec!["@alice:example.org".into(), "@bob:example.org".into()],
                 visibility: Some(RoomVisibility::Public),
                 encryption: Some(true),
+                parent: None,
             })
             .expect("request builds");
 

@@ -11,6 +11,7 @@ tool-channel-room-param-invites = IDs de usuario opcionales para invitar al crea
 tool-channel-room-param-visibility = Visibilidad de sala opcional para create_room.
 tool-channel-room-param-encryption = Si se debe solicitar el cifrado de la sala durante create_room.
 tool-channel-room-param-room-id = ID de sala existente para invite_user.
+tool-channel-room-param-parent-room-id = Para create_room en canales cuyas salas viven dentro de un chat existente (Telegram: temas de foro). ID del chat donde crear el tema. 'name' es el título del tema. Devuelve room_id como 'chat_id:topic_id'.
 tool-channel-room-param-user-id = ID de usuario a invitar para invite_user.
 tool-channel-room-error-security = Acción bloqueada: { $err }
 tool-channel-room-error-invalid-action = Acción no válida '{ $action }': debe ser 'create_room' o 'invite_user'.

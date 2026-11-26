@@ -11,6 +11,7 @@ tool-channel-room-param-invites = 创建房间时可选邀请的用户 ID。
 tool-channel-room-param-visibility = create_room 的可选房间可见性。
 tool-channel-room-param-encryption = 在 create_room 期间是否请求房间加密。
 tool-channel-room-param-room-id = 用于 invite_user 的现有房间 ID。
+tool-channel-room-param-parent-room-id = 用于在现有聊天内创建房间的频道（Telegram 论坛话题）的 create_room：要在其中创建话题的聊天 ID。'name' 为话题标题。返回的 room_id 格式为 'chat_id:topic_id'。
 tool-channel-room-param-user-id = 用于 invite_user 的待邀请用户 ID。
 tool-channel-room-error-security = 操作被阻止：{ $err }
 tool-channel-room-error-invalid-action = 无效操作 '{ $action }'：必须是 'create_room' 或 'invite_user'。

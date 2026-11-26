@@ -643,6 +643,11 @@ pub struct RoomCreationOptions {
     pub invites: Vec<String>,
     pub visibility: Option<RoomVisibility>,
     pub encryption: Option<bool>,
+    /// Existing conversation the new room lives inside, for channels whose
+    /// "rooms" are sub-threads of a chat (e.g. Telegram forum topics, created
+    /// inside a forum-enabled group or a bot DM with topics on).
+    #[serde(default)]
+    pub parent: Option<String>,
 }
 
 impl SendMessage {

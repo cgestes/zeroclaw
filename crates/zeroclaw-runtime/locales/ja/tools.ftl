@@ -11,6 +11,7 @@ tool-channel-room-param-invites = ルーム作成時に招待するオプショ�
 tool-channel-room-param-visibility = create_room 用のオプションのルームの可視性。
 tool-channel-room-param-encryption = create_room 中にルーム暗号化を要求するかどうか。
 tool-channel-room-param-room-id = invite_user 用の既存のルームID。
+tool-channel-room-param-parent-room-id = 既存のチャット内にルームを作るチャンネル(Telegram のフォーラムトピック)で create_room に使う親チャットID。'name' がトピック名。room_id は 'chat_id:topic_id' 形式で返されます。
 tool-channel-room-param-user-id = invite_user で招待するユーザーID。
 tool-channel-room-error-security = アクションがブロックされました: { $err }
 tool-channel-room-error-invalid-action = 無効なアクション '{ $action }': 'create_room' または 'invite_user' である必要があります。

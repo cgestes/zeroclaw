@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use zeroclaw_api::channel::{
-    Channel, ChannelMessage, ChannelModelPickerRequest, ListenerHealth, ProgressEvent, SendMessage,
+    Channel, ChannelMessage, ChannelModelPickerRequest, ListenerHealth, ProgressEvent,
+    RoomCreationOptions, SendMessage,
 };
 use zeroclaw_config::schema::{
     Config, DEFAULT_MULTI_MESSAGE_DELAY_MS, StreamMode, TELEGRAM_OFFICIAL_API_BASE_URL,
@@ -9170,10 +9171,183 @@ impl TelegramChannel {
     }
 }
 
+/// Telegram's limit on forum topic titles (`createForumTopic.name`).
+const TELEGRAM_FORUM_TOPIC_NAME_MAX_CHARS: usize = 128;
+
+impl TelegramChannel {
+    /// Validate `RoomCreationOptions` and build the `createForumTopic` body.
+    ///
+    /// Bots cannot create Telegram groups, so `create_room` maps to creating a
+    /// forum topic inside an existing chat: `options.parent` is that chat
+    /// (a forum-enabled supergroup, or a private chat with topics enabled) and
+    /// `options.name` is the topic title. Returns `(chat_id, body)`.
+    fn create_forum_topic_body(
+        options: &RoomCreationOptions,
+    ) -> anyhow::Result<(String, serde_json::Value)> {
+        let parent = options
+            .parent
+            .as_deref()
+            .map(str::trim)
+            .filter(|parent| !parent.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Telegram bots cannot create groups; pass parent_room_id (an existing \
+                     forum-enabled group or DM chat ID) to create a forum topic in it"
+                )
+            })?;
+        let (chat_id, existing_topic) = Self::parse_reply_target(parent);
+        if existing_topic.is_some() {
+            anyhow::bail!(
+                "parent_room_id must be a chat ID, not an existing topic ('chat_id:topic_id')"
+            );
+        }
+        let name = options
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Telegram forum topics need a name"))?;
+        if name.chars().count() > TELEGRAM_FORUM_TOPIC_NAME_MAX_CHARS {
+            anyhow::bail!(
+                "Telegram forum topic names are limited to {TELEGRAM_FORUM_TOPIC_NAME_MAX_CHARS} characters"
+            );
+        }
+        if !options.invites.is_empty() {
+            anyhow::bail!(
+                "Telegram forum topics have no separate membership; add people to the parent chat instead"
+            );
+        }
+        let chat_value = chat_id
+            .parse::<i64>()
+            .map_or_else(|_| serde_json::json!(chat_id), |id| serde_json::json!(id));
+        Ok((
+            chat_id,
+            serde_json::json!({ "chat_id": chat_value, "name": name }),
+        ))
+    }
+
+    /// Turn a `createForumTopic` response into a `chat_id:topic_id` room ID,
+    /// the same shape inbound topic messages use as their reply target.
+    fn forum_topic_room_id(chat_id: &str, response: &serde_json::Value) -> anyhow::Result<String> {
+        if !Self::telegram_api_envelope_ok(response) {
+            let description = response
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown error");
+            anyhow::bail!("Telegram createForumTopic failed: {description}");
+        }
+        let topic_id = response
+            .get("result")
+            .and_then(|result| result.get("message_thread_id"))
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Telegram createForumTopic response omitted message_thread_id")
+            })?;
+        Ok(format!("{chat_id}:{topic_id}"))
+    }
+}
+
+#[cfg(test)]
+mod forum_topic_tests {
+    use super::*;
+
+    fn options(parent: Option<&str>, name: Option<&str>) -> RoomCreationOptions {
+        RoomCreationOptions {
+            name: name.map(str::to_string),
+            parent: parent.map(str::to_string),
+            ..RoomCreationOptions::default()
+        }
+    }
+
+    #[test]
+    fn builds_body_with_numeric_chat_id() {
+        let (chat_id, body) = TelegramChannel::create_forum_topic_body(&options(
+            Some("-1006061054844"),
+            Some(" SNS "),
+        ))
+        .unwrap();
+        assert_eq!(chat_id, "-1006061054844");
+        assert_eq!(body["chat_id"], serde_json::json!(-1006061054844_i64));
+        assert_eq!(body["name"], "SNS");
+    }
+
+    #[test]
+    fn keeps_username_chat_id_as_string() {
+        let (_, body) =
+            TelegramChannel::create_forum_topic_body(&options(Some("@osom_job"), Some("SNS")))
+                .unwrap();
+        assert_eq!(body["chat_id"], "@osom_job");
+    }
+
+    #[test]
+    fn rejects_missing_parent_name_topic_parent_and_invites() {
+        assert!(TelegramChannel::create_forum_topic_body(&options(None, Some("SNS"))).is_err());
+        assert!(TelegramChannel::create_forum_topic_body(&options(Some("-100"), None)).is_err());
+        assert!(
+            TelegramChannel::create_forum_topic_body(&options(Some("-100:7"), Some("SNS")))
+                .is_err()
+        );
+        let long = "x".repeat(TELEGRAM_FORUM_TOPIC_NAME_MAX_CHARS + 1);
+        assert!(
+            TelegramChannel::create_forum_topic_body(&options(Some("-100"), Some(&long))).is_err()
+        );
+        let mut with_invites = options(Some("-100"), Some("SNS"));
+        with_invites.invites = vec!["123".into()];
+        assert!(TelegramChannel::create_forum_topic_body(&with_invites).is_err());
+    }
+
+    #[test]
+    fn room_id_from_response() {
+        let ok = serde_json::json!({
+            "ok": true,
+            "result": { "message_thread_id": 42, "name": "SNS", "icon_color": 7322096 }
+        });
+        assert_eq!(
+            TelegramChannel::forum_topic_room_id("-1006061054844", &ok).unwrap(),
+            "-1006061054844:42"
+        );
+        let err = serde_json::json!({
+            "ok": false,
+            "error_code": 400,
+            "description": "Bad Request: not enough rights to create a topic"
+        });
+        let message = TelegramChannel::forum_topic_room_id("-100", &err)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("not enough rights"));
+    }
+}
+
 #[async_trait]
 impl Channel for TelegramChannel {
     fn name(&self) -> &str {
         "telegram"
+    }
+
+    /// Creates a forum topic inside an existing chat (bots cannot create
+    /// groups). See [`TelegramChannel::create_forum_topic_body`].
+    async fn create_room(&self, options: &RoomCreationOptions) -> anyhow::Result<String> {
+        let (chat_id, body) = Self::create_forum_topic_body(options)?;
+        let response = self
+            .http_client()
+            .post(self.api_url("createForumTopic"))
+            .json(&body)
+            .send()
+            .await
+            // Strip the URL: it embeds the bot token.
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "Telegram createForumTopic request failed: {}",
+                    err.without_url()
+                )
+            })?;
+        let status = response.status();
+        let response_body: serde_json::Value = response.json().await.map_err(|_| {
+            anyhow::anyhow!(
+                "Telegram createForumTopic returned an unreadable response (HTTP {status})"
+            )
+        })?;
+        Self::forum_topic_room_id(&chat_id, &response_body)
     }
 
     fn self_handle(&self) -> Option<String> {
