@@ -14424,14 +14424,34 @@ impl Default for SpacesSyncConfig {
     }
 }
 
+fn is_safe_relative_subpath(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.contains('\0') {
+        return false;
+    }
+    let mut saw_component = false;
+    for comp in std::path::Path::new(trimmed).components() {
+        match comp {
+            std::path::Component::Normal(_) | std::path::Component::CurDir => {
+                saw_component = true;
+            }
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => return false,
+        }
+    }
+    saw_component
+}
+
 impl Config {
-    /// The folder of space `id`, if it is declared and enabled.
+    /// The folder of space `id`, if it is declared, enabled, and stays inside
+    /// the owning agent's workspace (no `..` or absolute path escape).
     pub fn space_dir(&self, id: &str) -> Option<std::path::PathBuf> {
         let space = self.spaces.get(id).filter(|s| s.enabled)?;
-        if space.agent.is_empty() || space.path.is_empty() {
+        if space.agent.is_empty() || !is_safe_relative_subpath(&space.path) {
             return None;
         }
-        Some(self.agent_workspace_dir(&space.agent).join(&space.path))
+        Some(self.agent_workspace_dir(&space.agent).join(space.path.trim()))
     }
 
     /// Optional per-space drop folder for user files outside git.
@@ -14442,13 +14462,22 @@ impl Config {
             return None;
         }
         let expanded = if let Some(rest) = raw.strip_prefix("~/") {
+            if !is_safe_relative_subpath(rest) {
+                return None;
+            }
             let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
             home.join(rest)
         } else {
             let p = std::path::PathBuf::from(raw);
             if p.is_absolute() {
+                if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                    return None;
+                }
                 p
             } else {
+                if !is_safe_relative_subpath(raw) {
+                    return None;
+                }
                 self.agent_workspace_dir(&space.agent).join(p)
             }
         };

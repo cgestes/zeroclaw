@@ -388,5 +388,33 @@ mod tests {
         assert!(!cfg.space_isolation_allows("family", "personal"));
         assert!(!cfg.space_isolation_allows("scribe-family", "personal"));
         assert!(cfg.space_files_dir("personal").is_some());
+
+        cfg.spaces.insert(
+            "escape".into(),
+            zeroclaw_config::schema::SpaceConfig {
+                enabled: true,
+                agent: "luc".into(),
+                review_agent: String::new(),
+                path: "../family".into(),
+                files_dir: "../other-files".into(),
+                title: "Escape".into(),
+            },
+        );
+        cfg.spaces.insert(
+            "abs".into(),
+            zeroclaw_config::schema::SpaceConfig {
+                enabled: true,
+                agent: "luc".into(),
+                review_agent: String::new(),
+                path: "/etc".into(),
+                files_dir: "/srv/osom/files/personal".into(),
+                title: "Abs".into(),
+            },
+        );
+        assert!(cfg.space_dir("personal").is_some());
+        assert!(cfg.space_dir("escape").is_none(), "parent traversal must be rejected");
+        assert!(cfg.space_files_dir("escape").is_none(), "relative parent traversal must be rejected");
+        assert!(cfg.space_dir("abs").is_none(), "absolute space path must be rejected");
+        assert!(cfg.space_files_dir("abs").is_some(), "explicit absolute files_dir stays allowed");
     }
 }
