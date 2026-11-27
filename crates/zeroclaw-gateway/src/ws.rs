@@ -2772,6 +2772,18 @@ async fn process_chat_message(
                 let _ = backend.set_session_state(session_key, "idle", None);
             }
 
+            // Fire `on_turn_end` hooks (e.g. post-turn space commits)
+            if let Some(hooks) = agent.hook_runner() {
+                hooks
+                    .fire_turn_end(&zeroclaw_api::hook::TurnEndEvent {
+                        agent: turn_alias.clone(),
+                        session_id: session_key.to_string(),
+                        channel: WS_CHANNEL_KEY.to_string(),
+                        response: outcome.response.clone(),
+                    })
+                    .await;
+            }
+
             // Broadcast agent_end event
             let _ = state.event_tx.send(serde_json::json!({
                 "type": "agent_end",

@@ -50,6 +50,7 @@ pub mod security;
 pub mod service;
 pub mod skills;
 pub mod sop;
+pub mod spaces_sync;
 pub mod subagent;
 pub mod tools;
 pub mod trust;

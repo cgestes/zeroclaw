@@ -120,7 +120,8 @@ async fn live_watch_debounces_and_fires_hooks() {
     let w = FileWatcher::new("docs", &cfg(&root), Some(store.clone()), Some(Arc::new(runner)))
         .unwrap();
     let cancel = CancellationToken::new();
-    let handle = tokio::spawn(w.run(cancel.clone()));
+    let run = w.run(cancel.clone());
+    let handle = zeroclaw_spawn::spawn!(run);
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Editor-style save: write a temp file, then rename over the target.

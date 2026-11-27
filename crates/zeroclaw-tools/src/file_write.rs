@@ -280,6 +280,8 @@ impl Tool for FileWriteTool {
         let capability_relative = capability_relative.to_path_buf();
         let file_name = file_name.to_os_string();
         let display_path = path.to_owned();
+        let security = Arc::clone(&self.security);
+        let written = prospective_target.clone();
         tokio::task::spawn_blocking(move || {
             let parent_dir = match create_dir_beneath(&capability_root, &capability_relative) {
                 Ok(dir) => dir,
@@ -324,6 +326,7 @@ impl Tool for FileWriteTool {
                 }
                 return Err(error.into());
             }
+            crate::helpers::space_writes::record(&security, &written);
             Ok(ToolResult {
                 success: true,
                 output: format!("Written {} bytes to {display_path}", bytes.len()).into(),

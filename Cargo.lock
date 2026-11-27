@@ -14311,6 +14311,7 @@ dependencies = [
  "zeroclaw-rpc-client",
  "zeroclaw-rpc-proto",
  "zeroclaw-runtime",
+ "zeroclaw-spaces",
  "zeroclaw-spawn",
  "zeroclaw-tls",
  "zeroclaw-tools",
@@ -14659,6 +14660,7 @@ dependencies = [
  "zeroclaw-relay-proto",
  "zeroclaw-rpc-proto",
  "zeroclaw-sop-graph",
+ "zeroclaw-spaces",
  "zeroclaw-spawn",
  "zeroclaw-tls",
  "zeroclaw-tool-call-parser",
@@ -14844,6 +14846,7 @@ dependencies = [
  "zeroclaw-log",
  "zeroclaw-memory",
  "zeroclaw-providers",
+ "zeroclaw-spaces",
  "zeroclaw-spawn",
 ]
 

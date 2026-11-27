@@ -251,16 +251,36 @@ impl FileEditTool {
 
         let new_content = content.replacen(old_string, new_string, 1);
 
-        match tokio::fs::write(&resolved_target, &new_content).await {
-            Ok(()) => Ok(ToolResult {
-                success: true,
-                output: format!(
-                    "Edited {path}: replaced 1 occurrence ({} bytes)",
-                    new_content.len()
-                )
-                .into(),
-                error: None,
-            }),
+        // Replace the file atomically (synced temp file, then rename), so a
+        // full disk or a crash can never leave it truncated.
+        let parent = resolved_parent.clone();
+        let name = file_name.to_os_string();
+        let bytes = new_content.clone().into_bytes();
+        let written = tokio::task::spawn_blocking(move || {
+            let dir = crate::helpers::filesystem_boundary::open_absolute_dir_nofollow(&parent)?;
+            crate::helpers::filesystem_boundary::write_file_atomic(
+                &dir,
+                std::path::Path::new(&name),
+                &bytes,
+            )
+        })
+        .await
+        .map_err(|e| std::io::Error::other(e.to_string()))
+        .and_then(|r| r.map_err(|e| std::io::Error::other(e.to_string())));
+
+        match written {
+            Ok(()) => {
+                crate::helpers::space_writes::record(&self.security, &resolved_target);
+                Ok(ToolResult {
+                    success: true,
+                    output: format!(
+                        "Edited {path}: replaced 1 occurrence ({} bytes)",
+                        new_content.len()
+                    )
+                    .into(),
+                    error: None,
+                })
+            }
             Err(e) => Ok(ToolResult {
                 success: false,
                 output: ToolOutput::default(),

@@ -534,3 +534,45 @@ fn every_commit_is_announced() {
     let e = seen.expect("event for the commit");
     assert_eq!(e.paths, vec![format!("{SPACE}/shopping.md")]);
 }
+
+#[test]
+fn overlapping_text_conflict_returns_addressable_shas_for_all_three_versions() {
+    let f = Fixture::new();
+    let base = f.head();
+    f.agent_writes("shopping.md", "- [ ] oat milk\n");
+    let r = f
+        .space()
+        .commit(&request(
+            "change-conflict-shas",
+            Some(&base),
+            &[("shopping.md", Some("- [ ] almond milk\n"))],
+        ))
+        .expect("commit");
+    assert!(r.merged);
+    let conflict = r
+        .conflicts
+        .iter()
+        .find(|c| c.path == "shopping.md")
+        .expect("overlap conflict reported");
+    assert_eq!(conflict.kind, zeroclaw_spaces::ConflictKind::Both);
+    let base_sha = conflict.base.as_deref().expect("base sha");
+    let head_sha = conflict.head.as_deref().expect("head sha");
+    let client_sha = conflict.client_commit.as_deref().expect("client_commit sha");
+    assert_eq!(base_sha, base);
+    assert_eq!(client_sha, r.commit);
+    assert_eq!(
+        f.space().read("shopping.md", Some(base_sha)).unwrap().bytes,
+        b"- [ ] milk\n"
+    );
+    assert_eq!(
+        f.space().read("shopping.md", Some(head_sha)).unwrap().bytes,
+        b"- [ ] oat milk\n"
+    );
+    assert_eq!(
+        f.space()
+            .read("shopping.md", Some(client_sha))
+            .unwrap()
+            .bytes,
+        b"- [ ] almond milk\n"
+    );
+}

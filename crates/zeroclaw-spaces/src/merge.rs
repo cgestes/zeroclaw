@@ -21,6 +21,15 @@ pub struct Conflict {
     /// For [`ConflictKind::Copy`]: where the incoming version was saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy: Option<String>,
+    /// For [`ConflictKind::Both`]: merge-base commit SHA for client-agent rebasing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// For [`ConflictKind::Both`]: pre-merge HEAD commit SHA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// For [`ConflictKind::Both`]: client's exact incoming commit SHA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_commit: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,10 +103,24 @@ pub(crate) fn merge(
         if t == o {
             continue;
         }
-        let report = |kind, copy: Option<String>| Conflict {
-            path: path.strip_prefix(strip).unwrap_or(&path).to_string(),
-            kind,
-            copy: copy.map(|c| c.strip_prefix(strip).unwrap_or(&c).to_string()),
+        let report = |kind, copy: Option<String>| {
+            let (base_sha, head_sha, client_sha) = if kind == ConflictKind::Both {
+                (
+                    Some(base.clone()),
+                    Some(head.to_string()),
+                    Some(incoming.to_string()),
+                )
+            } else {
+                (None, None, None)
+            };
+            Conflict {
+                path: path.strip_prefix(strip).unwrap_or(&path).to_string(),
+                kind,
+                copy: copy.map(|c| c.strip_prefix(strip).unwrap_or(&c).to_string()),
+                base: base_sha,
+                head: head_sha,
+                client_commit: client_sha,
+            }
         };
         if o == b {
             // Only incoming changed it.
@@ -308,6 +331,9 @@ mod tests {
             path: "a.md".into(),
             kind: ConflictKind::KeptEdit,
             copy: None,
+            base: None,
+            head: None,
+            client_commit: None,
         };
         assert_eq!(
             serde_json::to_string(&c).ok().as_deref(),

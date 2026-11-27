@@ -11315,6 +11315,14 @@ async fn process_channel_message_body(
                     hooks
                         .fire_message_sent(&msg.channel, &msg.reply_target, &delivered_response)
                         .await;
+                    hooks
+                        .fire_turn_end(&zeroclaw_api::hook::TurnEndEvent {
+                            agent: ctx.agent_alias.as_str().to_string(),
+                            session_id: format!("{}_{}", msg.channel, msg.reply_target),
+                            channel: msg.channel.clone(),
+                            response: delivered_response.clone(),
+                        })
+                        .await;
                 }
                 // Send tool receipts as a separate message in the same thread.
                 // The block is the operator-facing audit surface for the feature,
@@ -17743,13 +17751,7 @@ pub async fn start_channels_with_authority_and_plugin_webhooks(
             media_pipeline: config.media_pipeline.clone(),
             transcription_config: config.transcription.clone(),
             agent_transcription_provider: agent.transcription_provider.as_str().to_string(),
-            hooks: if config.hooks.enabled {
-                Some(Arc::new(
-                    zeroclaw_runtime::hooks::HookRunner::from_root_config(&config),
-                ))
-            } else {
-                None
-            },
+            hooks: zeroclaw_runtime::hooks::HookRunner::for_runtime(&config),
             non_cli_excluded_tools: Arc::new(risk_profile.excluded_tools.clone()),
             autonomy_level: risk_profile.level,
             tool_call_dedup_exempt: Arc::new(agent.resolved.tool_call_dedup_exempt.clone()),

@@ -648,6 +648,22 @@ pub struct Config {
     #[nested]
     pub file_watchers: HashMap<String, FileWatcherConfig>,
 
+    /// Spaces (`[spaces.<id>]`): folders of an agent workspace that
+    /// offline-first clients read and edit through `/api/spaces`. Nothing is
+    /// exposed unless declared here. The folder must be inside a git
+    /// repository; see [`SpaceConfig`].
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[nested]
+    #[group = "Storage"]
+    pub spaces: HashMap<String, SpaceConfig>,
+
+    /// The committer for the git repository holding the spaces
+    /// (`[spaces_sync]`); see [`SpacesSyncConfig`].
+    #[serde(default)]
+    #[nested]
+    #[group = "Storage"]
+    pub spaces_sync: SpacesSyncConfig,
+
     /// Hardware configuration (wizard-driven physical world setup).
     #[serde(default)]
     #[nested]
@@ -14316,6 +14332,140 @@ fn default_otel_tool_io_max_chars() -> usize {
     1000
 }
 
+// ── Spaces ───────────────────────────────────────────────────────
+
+/// A space (`[spaces.<id>]`): a folder of an agent's workspace that clients
+/// sync offline-first through `/api/spaces/<id>`.
+///
+/// Every client edit is stored as a git commit on the version the client
+/// started from, then merged without dropping content. Agents keep editing
+/// the files directly; their edits are committed before any merge.
+#[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[prefix = "space"]
+#[serde(default)]
+pub struct SpaceConfig {
+    /// Expose this space. Default: `true`.
+    pub enabled: bool,
+    /// Agent alias whose workspace holds the folder.
+    pub agent: String,
+    /// Optional read-only agent alias that answers anchored comments on this space.
+    pub review_agent: String,
+    /// Folder relative to that agent's workspace, e.g. `procedures`.
+    pub path: String,
+    /// Optional local folder (outside git) for user-dropped files scoped to this space.
+    pub files_dir: String,
+    /// Name shown by clients. Default: the space id.
+    pub title: String,
+}
+
+impl Default for SpaceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            agent: String::new(),
+            review_agent: String::new(),
+            path: String::new(),
+            files_dir: String::new(),
+            title: String::new(),
+        }
+    }
+}
+
+/// Committer for the repository holding the spaces (`[spaces_sync]`).
+///
+/// When enabled it is the only thing that commits and pushes that
+/// repository: agents' edits inside a space are committed after
+/// `space_quiet_secs`, the rest of the repository after `quiet_secs`, and
+/// with a `remote` set, each round fetches, merges what others pushed and
+/// pushes (never force). Disable other auto-commit jobs on the same repository.
+#[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[prefix = "spaces_sync"]
+#[serde(default)]
+pub struct SpacesSyncConfig {
+    /// Run the committer. Default: `false`.
+    pub enabled: bool,
+    /// Quiet period before agent edits inside a space are committed, so
+    /// clients see them quickly. Default: `5`.
+    pub space_quiet_secs: u64,
+    /// Quiet period before other edits in the repository are committed.
+    /// Default: `120`.
+    pub quiet_secs: u64,
+    /// Commit pending edits after this long even if they keep changing.
+    /// Default: `1800`.
+    pub max_wait_secs: u64,
+    /// Git remote to fetch from and push to. Empty: no remote. Default: empty.
+    pub remote: String,
+    /// Branch on the remote. Default: `main`.
+    pub branch: String,
+    /// Seconds between remote rounds. Default: `300`.
+    pub remote_interval_secs: u64,
+    /// Network timeout for one fetch or push. Default: `60`.
+    pub timeout_secs: u64,
+    /// Repository-relative paths never committed or merged. Default:
+    /// `["config.toml"]`.
+    pub exclude: Vec<String>,
+}
+
+impl Default for SpacesSyncConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            space_quiet_secs: 5,
+            quiet_secs: 120,
+            max_wait_secs: 1800,
+            remote: String::new(),
+            branch: "main".to_string(),
+            remote_interval_secs: 300,
+            timeout_secs: 60,
+            exclude: vec!["config.toml".to_string()],
+        }
+    }
+}
+
+impl Config {
+    /// The folder of space `id`, if it is declared and enabled.
+    pub fn space_dir(&self, id: &str) -> Option<std::path::PathBuf> {
+        let space = self.spaces.get(id).filter(|s| s.enabled)?;
+        if space.agent.is_empty() || space.path.is_empty() {
+            return None;
+        }
+        Some(self.agent_workspace_dir(&space.agent).join(&space.path))
+    }
+
+    /// Optional per-space drop folder for user files outside git.
+    pub fn space_files_dir(&self, id: &str) -> Option<std::path::PathBuf> {
+        let space = self.spaces.get(id).filter(|s| s.enabled)?;
+        let raw = space.files_dir.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let expanded = if let Some(rest) = raw.strip_prefix("~/") {
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+            home.join(rest)
+        } else {
+            let p = std::path::PathBuf::from(raw);
+            if p.is_absolute() {
+                p
+            } else {
+                self.agent_workspace_dir(&space.agent).join(p)
+            }
+        };
+        Some(expanded)
+    }
+
+    /// Strict zero cross-space isolation: an agent may only access a space if it
+    /// is that space's owning `agent` or its scoped read-only `review_agent`.
+    pub fn space_isolation_allows(&self, agent: &str, space_id: &str) -> bool {
+        let Some(space) = self.spaces.get(space_id).filter(|s| s.enabled) else {
+            return false;
+        };
+        (!space.agent.is_empty() && space.agent == agent)
+            || (!space.review_agent.is_empty() && space.review_agent == agent)
+    }
+}
+
 // ── File watchers ────────────────────────────────────────────────
 
 /// Named file watcher (`[file_watchers.<name>]`).
@@ -22552,6 +22702,8 @@ impl Default for Config {
             peer_groups: HashMap::new(),
             hooks: HooksConfig::default(),
             file_watchers: HashMap::new(),
+            spaces: HashMap::new(),
+            spaces_sync: SpacesSyncConfig::default(),
             hardware: HardwareConfig::default(),
             query_classification: QueryClassificationConfig::default(),
             transcription: TranscriptionConfig::default(),
@@ -36224,6 +36376,8 @@ auto_save = true
             peer_groups: HashMap::new(),
             hooks: HooksConfig::default(),
             file_watchers: HashMap::new(),
+            spaces: HashMap::new(),
+            spaces_sync: SpacesSyncConfig::default(),
             hardware: HardwareConfig::default(),
             transcription: TranscriptionConfig::default(),
             tts: TtsConfig::default(),
@@ -37690,6 +37844,8 @@ default_temperature = 0.7
             peer_groups: HashMap::new(),
             hooks: HooksConfig::default(),
             file_watchers: HashMap::new(),
+            spaces: HashMap::new(),
+            spaces_sync: SpacesSyncConfig::default(),
             hardware: HardwareConfig::default(),
             transcription: TranscriptionConfig::default(),
             tts: TtsConfig::default(),

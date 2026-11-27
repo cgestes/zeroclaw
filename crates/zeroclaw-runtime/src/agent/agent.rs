@@ -1600,6 +1600,10 @@ impl Agent {
         &self.history
     }
 
+    pub fn hook_runner(&self) -> Option<&Arc<crate::hooks::HookRunner>> {
+        self.hook_runner.as_ref()
+    }
+
     /// Return the owner-maintained structured history for native persistence.
     /// The Agent history is already replayed from the provider buffer with
     /// positional memory provenance applied; callers must not reconstruct it
@@ -3661,11 +3665,7 @@ impl Agent {
             .activated_tools(activated_handle)
             .mcp_deferred_section(Some(deferred_section))
             .mcp_pinned_blocks(pinned_blocks)
-            .hook_runner(if config.hooks.enabled {
-                Some(Arc::new(crate::hooks::HookRunner::from_root_config(config)))
-            } else {
-                None
-            })
+            .hook_runner(crate::hooks::HookRunner::for_runtime(config))
             .approval_manager(Some(Arc::new(approval_manager)))
             // The switch snapshot is seeded from the SAME generation the limits
             // resolver above reads, and both are republished together by

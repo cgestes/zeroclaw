@@ -1329,6 +1329,13 @@ pub async fn run_with_authority(
         crate::health::mark_component_ok("file_watchers");
     }
 
+    // Spaces committer: the only writer of the git repository holding the
+    // `[spaces.<id>]` folders. Config changes apply on the next reload.
+    if let Some(handle) = crate::spaces_sync::spawn(&config, channels_cancel.clone()) {
+        handles.push(handle);
+        crate::health::mark_component_ok("spaces_sync");
+    }
+
     if config.heartbeat.enabled {
         let heartbeat_cfg = config.clone();
         let heartbeat_execution_capability = daemon_execution_capability.clone();

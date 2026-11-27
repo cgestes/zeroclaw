@@ -205,6 +205,13 @@ fn normalize(path: &Path) -> PathBuf {
     }
 }
 
+/// The whole repository except `exclude` (repository-relative paths).
+pub fn repo_pathspec(exclude: &[String]) -> Vec<String> {
+    let mut spec = vec![":/".to_string()];
+    spec.extend(exclude.iter().map(|e| format!(":(top,exclude,literal){e}")));
+    spec
+}
+
 static LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = LazyLock::new(Default::default);
 
 /// A git repository whose working tree is live.
@@ -544,8 +551,7 @@ impl Repo {
         exclude: &[String],
         timeout: Duration,
     ) -> Result<RemoteSync> {
-        let mut pathspec = vec![":/".to_string()];
-        pathspec.extend(exclude.iter().map(|e| format!(":(top,exclude,literal){e}")));
+        let pathspec = repo_pathspec(exclude);
         let keep = |p: &str| {
             !exclude
                 .iter()
@@ -720,6 +726,11 @@ impl Space {
             }
         }
         self.repo.head()
+    }
+
+    /// The current commit, after committing pending agent edits in the space.
+    pub fn head(&self) -> Result<String> {
+        self.fresh()
     }
 
     /// Every file of the space at HEAD.
@@ -961,6 +972,17 @@ impl Space {
         Ok(result)
     }
 
+    /// [`Repo::commit_quiet`] for this space's folder only.
+    pub fn commit_quiet(
+        &self,
+        quiet: Duration,
+        pending_since: &mut Option<SystemTime>,
+        max_wait: Duration,
+    ) -> Result<Vec<Event>> {
+        self.repo
+            .commit_quiet(&self.pathspec(), quiet, pending_since, max_wait)
+    }
+
     /// Commit the space's pending working-tree edits now, with `note` as the
     /// message (an agent's own description of its change).
     pub fn snapshot(&self, note: Option<&str>) -> Result<Vec<Event>> {
@@ -978,11 +1000,15 @@ fn summary(author: &str, paths: &[String]) -> String {
     format!("{author}: edit {}{more}", names.join(", "))
 }
 
+/// Temporary files of an atomic write in progress (this engine's, and the
+/// file tools' `.zeroclaw-write-*.tmp`): never content to commit.
 fn is_engine_temp(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
-    name.starts_with('.')
+    let ours = name.starts_with('.')
         && name.contains(".zc-")
-        && (name.ends_with(".tmp") || name.ends_with(".aside"))
+        && (name.ends_with(".tmp") || name.ends_with(".aside"));
+    let tools = name.starts_with(".zeroclaw-write-") && name.ends_with(".tmp");
+    ours || tools
 }
 
 /// A clean, relative, `/`-separated path that cannot leave the space or

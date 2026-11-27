@@ -11,6 +11,7 @@ publish = true
 [dependencies]
 zeroclaw-api.workspace = true
 zeroclaw-spawn.workspace = true
+zeroclaw-spaces.workspace = true
 zeroclaw-infra.workspace = true
 zeroclaw-config.workspace = true
 zeroclaw-tls.workspace = true

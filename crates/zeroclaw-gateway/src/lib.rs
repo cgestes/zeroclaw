@@ -23,6 +23,7 @@ pub mod api_skills;
 pub mod api_sop;
 pub mod api_sop_author;
 mod api_sop_webhook;
+pub mod api_spaces;
 pub mod api_upload;
 #[cfg(feature = "webauthn")]
 pub mod api_webauthn;
@@ -2885,6 +2886,32 @@ pub async fn run_gateway_with_plugin_webhooks(
             Duration::from_secs(gateway_request_timeout_secs(&config.gateway)),
         ));
     let inner = inner.merge(upload_router);
+
+    // Spaces carry whole documents, so their routes opt out of the 64 KB
+    // control-plane body limit like the upload route does. The event stream
+    // only needs its headers within the timeout.
+    let spaces_router: Router = Router::new()
+        .route("/api/spaces", get(api_spaces::handle_list))
+        .route("/api/spaces/{id}/tree", get(api_spaces::handle_tree))
+        .route("/api/spaces/{id}/file", get(api_spaces::handle_file))
+        .route("/api/spaces/{id}/changes", get(api_spaces::handle_changes))
+        .route("/api/spaces/{id}/history", get(api_spaces::handle_history))
+        .route("/api/spaces/{id}/events", get(api_spaces::handle_events))
+        .route(
+            "/api/spaces/{id}/commits",
+            post(api_spaces::handle_commit).layer(axum::extract::DefaultBodyLimit::max(
+                api_spaces::COMMIT_BODY_CEILING_BYTES,
+            )),
+        )
+        .with_state(state.clone())
+        .layer(RequestBodyLimitLayer::new(
+            api_spaces::COMMIT_BODY_CEILING_BYTES,
+        ))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(gateway_request_timeout_secs(&config.gateway)),
+        ));
+    let inner = inner.merge(spaces_router);
 
     // Manual cron-trigger and A2A task routes live on their own sub-router so
     // they can opt out of the 30s gateway-wide TimeoutLayer. Both run a

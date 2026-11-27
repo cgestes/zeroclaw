@@ -66,6 +66,7 @@ impl HookRunner {
                         runner.register(Box::new(super::builtin::CommandLoggerHook::new()));
                     }
                     runner.register_command_hook(&config.hooks);
+                    runner.register_spaces_turn_hook(config);
                     ::zeroclaw_log::record!(
                         ERROR,
                         ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
@@ -83,7 +84,34 @@ impl HookRunner {
             Vec::new()
         };
 
-        Self::from_config_with_nat64_prefixes(&config.hooks, &nat64_prefixes)
+        let mut runner = Self::from_config_with_nat64_prefixes(&config.hooks, &nat64_prefixes);
+        runner.register_spaces_turn_hook(config);
+        runner
+    }
+
+    /// Build the runtime hook runner if either `[hooks]` or `[spaces_sync]`
+    /// (with declared `[spaces]`) requires lifecycle hooks.
+    pub fn for_runtime(config: &zeroclaw_config::schema::Config) -> Option<std::sync::Arc<Self>> {
+        if config.hooks.enabled {
+            return Some(std::sync::Arc::new(Self::from_root_config(config)));
+        }
+        if config.spaces_sync.enabled && !config.spaces.is_empty() {
+            let mut runner = Self::new();
+            runner.register_spaces_turn_hook(config);
+            if !runner.is_empty() {
+                return Some(std::sync::Arc::new(runner));
+            }
+        }
+        None
+    }
+
+    fn register_spaces_turn_hook(&mut self, config: &zeroclaw_config::schema::Config) {
+        if config.spaces_sync.enabled && !config.spaces.is_empty() {
+            let hook = crate::spaces_sync::SpacesTurnHook::from_config(config);
+            if !hook.is_empty() {
+                self.register(Box::new(hook));
+            }
+        }
     }
 
     fn from_config_with_nat64_prefixes(
@@ -315,6 +343,15 @@ impl HookRunner {
             .handlers
             .iter()
             .map(|h| h.on_file_changed(event))
+            .collect();
+        join_all(futs).await;
+    }
+
+    pub async fn fire_turn_end(&self, event: &zeroclaw_api::hook::TurnEndEvent) {
+        let futs: Vec<_> = self
+            .handlers
+            .iter()
+            .map(|h| h.on_turn_end(event))
             .collect();
         join_all(futs).await;
     }
