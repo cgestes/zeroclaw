@@ -95,14 +95,9 @@ impl HookRunner {
         if config.hooks.enabled {
             return Some(std::sync::Arc::new(Self::from_root_config(config)));
         }
-        if config.spaces_sync.enabled && !config.spaces.is_empty() {
-            let mut runner = Self::new();
-            runner.register_spaces_turn_hook(config);
-            if !runner.is_empty() {
-                return Some(std::sync::Arc::new(runner));
-            }
-        }
-        None
+        let mut runner = Self::new();
+        runner.register_spaces_turn_hook(config);
+        (!runner.is_empty()).then(|| std::sync::Arc::new(runner))
     }
 
     fn register_spaces_turn_hook(&mut self, config: &zeroclaw_config::schema::Config) {
