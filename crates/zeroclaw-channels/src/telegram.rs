@@ -2229,6 +2229,9 @@ pub struct TelegramChannel {
     transcription: Option<zeroclaw_config::schema::TranscriptionConfig>,
     transcription_manager: Option<std::sync::Arc<super::transcription::TranscriptionManager>>,
     voice_transcriptions: Mutex<std::collections::HashMap<String, String>>,
+    /// Forum topic names keyed by `chat_id:topic_id`. See
+    /// [`TelegramChannel::forum_topic_name`] for how entries are learned.
+    forum_topic_names: Mutex<std::collections::HashMap<String, ForumTopicName>>,
     workspace_dir: Option<std::path::PathBuf>,
     ack_reactions: bool,
     tts_manager: Option<Arc<super::tts::TtsManager>>,
@@ -3856,6 +3859,7 @@ impl TelegramChannel {
             transcription: None,
             transcription_manager: None,
             voice_transcriptions: Mutex::new(std::collections::HashMap::new()),
+            forum_topic_names: Mutex::new(std::collections::HashMap::new()),
             workspace_dir: None,
             ack_reactions: true,
             tts_manager: None,
@@ -6539,6 +6543,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         if let Some(attr) = Self::format_forward_attribution(message) {
             content = Self::prepend_forward_attribution(&attr, content);
         }
+        let content = self.with_forum_topic_label(message, content);
 
         Some(ChannelMessage {
             id: format!("telegram_{chat_id}_{message_id}"),
@@ -6992,6 +6997,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         } else {
             content
         };
+        let content = self.with_forum_topic_label(message, content);
 
         UpdateDisposition::Parsed(Box::new(ChannelMessage {
             id: format!("telegram_{chat_id}_{message_id}"),
@@ -7304,6 +7310,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         } else {
             content
         };
+        let content = self.with_forum_topic_label(message, content);
 
         // Exit input-driven voice mode when a sender switches back to typing.
         // A sender configured for voice output (output_modality = "voice") keeps
@@ -8791,6 +8798,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         // transient failure must abort this update's processing entirely
         // (not fall through to the next parser) so the offset stays put and
         // the next poll retries it.
+        self.observe_forum_topic_service(update);
         let disposition = if let Some(m) = self.parse_update_message(update) {
             UpdateDisposition::Parsed(Box::new(m))
         } else {
@@ -9245,11 +9253,211 @@ impl TelegramChannel {
             })?;
         Ok(format!("{chat_id}:{topic_id}"))
     }
+
+    /// Learn topic names from service messages that carry no text and are
+    /// otherwise dropped: `forum_topic_created` and `forum_topic_edited`
+    /// (rename). Renames are authoritative over the creation message that
+    /// Telegram keeps attaching to later topic messages.
+    fn observe_forum_topic_service(&self, update: &serde_json::Value) {
+        let Some(message) = update.get("message") else {
+            return;
+        };
+        let Some(key) = Self::forum_topic_key(message) else {
+            return;
+        };
+        let rename = message
+            .get("forum_topic_edited")
+            .and_then(|edited| edited.get("name"))
+            .and_then(serde_json::Value::as_str);
+        let created = message
+            .get("forum_topic_created")
+            .and_then(|created| created.get("name"))
+            .and_then(serde_json::Value::as_str);
+        if let Some(name) = rename {
+            self.remember_forum_topic_name(key, name, true);
+        } else if let Some(name) = created {
+            self.remember_forum_topic_name(key, name, false);
+        }
+    }
+
+    /// `chat_id:topic_id` for a message inside a genuine forum topic.
+    fn forum_topic_key(message: &serde_json::Value) -> Option<String> {
+        let topic_id = Self::topic_thread_id(message)?;
+        let chat_id = message
+            .get("chat")
+            .and_then(|chat| chat.get("id"))
+            .and_then(serde_json::Value::as_i64)?;
+        Some(format!("{chat_id}:{topic_id}"))
+    }
+
+    fn remember_forum_topic_name(&self, key: String, name: &str, authoritative: bool) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let mut names = self.forum_topic_names.lock();
+        if !authoritative && names.get(&key).is_some_and(|known| known.authoritative) {
+            return;
+        }
+        if names.len() >= FORUM_TOPIC_NAME_CACHE_MAX && !names.contains_key(&key) {
+            names.clear();
+        }
+        names.insert(
+            key,
+            ForumTopicName {
+                name: name.to_string(),
+                authoritative,
+            },
+        );
+    }
+
+    /// Name of the forum topic a message was posted in, if known.
+    ///
+    /// The Bot API has no "get topic" method, but a message posted in a topic
+    /// (and not replying to anything else) carries the topic's creation
+    /// message as `reply_to_message`, whose `forum_topic_created.name` is the
+    /// topic name at creation time. Later renames are learned from
+    /// `forum_topic_edited` service messages, and topics this bot creates are
+    /// recorded by `create_room`; both take precedence. Names are cached so
+    /// genuine replies inside a topic still resolve.
+    fn forum_topic_name(&self, message: &serde_json::Value) -> Option<String> {
+        let key = Self::forum_topic_key(message)?;
+        let topic_id = message
+            .get("message_thread_id")
+            .and_then(serde_json::Value::as_i64)?;
+        let created_name = message
+            .get("reply_to_message")
+            .filter(|reply| {
+                reply.get("message_id").and_then(serde_json::Value::as_i64) == Some(topic_id)
+            })
+            .and_then(|reply| reply.get("forum_topic_created"))
+            .and_then(|created| created.get("name"))
+            .and_then(serde_json::Value::as_str);
+        if let Some(name) = created_name {
+            self.remember_forum_topic_name(key.clone(), name, false);
+        }
+        self.forum_topic_names
+            .lock()
+            .get(&key)
+            .map(|known| known.name.clone())
+    }
+
+    /// Prefix `[Topic: <name> #<id>]` so the agent can route by topic name.
+    fn with_forum_topic_label(&self, message: &serde_json::Value, content: String) -> String {
+        let Some(name) = self.forum_topic_name(message) else {
+            return content;
+        };
+        let topic_id = Self::topic_thread_id(message).unwrap_or_default();
+        Self::prepend_forward_attribution(&format!("[Topic: {name} #{topic_id}]"), content)
+    }
+}
+
+/// Upper bound on cached forum topic names before the cache is reset.
+const FORUM_TOPIC_NAME_CACHE_MAX: usize = 500;
+
+#[derive(Debug, Clone)]
+struct ForumTopicName {
+    name: String,
+    /// Learned from a rename or from our own `createForumTopic`, so it wins
+    /// over the (possibly stale) creation name echoed on topic messages.
+    authoritative: bool,
 }
 
 #[cfg(test)]
 mod forum_topic_tests {
     use super::*;
+
+    fn channel() -> TelegramChannel {
+        TelegramChannel::new(
+            "t".into(),
+            "telegram_test_alias",
+            Arc::new(|| vec!["*".into()]),
+            false,
+        )
+    }
+
+    fn topic_update(
+        thread: i64,
+        text: &str,
+        reply: Option<serde_json::Value>,
+    ) -> serde_json::Value {
+        let mut message = serde_json::json!({
+            "message_id": 100,
+            "from": { "id": 1, "username": "cgestes" },
+            "chat": { "id": -1006061054844_i64, "type": "supergroup", "is_forum": true },
+            "message_thread_id": thread,
+            "is_topic_message": true,
+            "text": text
+        });
+        if let Some(reply) = reply {
+            message["reply_to_message"] = reply;
+        }
+        serde_json::json!({ "update_id": 1, "message": message })
+    }
+
+    fn creation(thread: i64, name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "message_id": thread,
+            "forum_topic_created": { "name": name, "icon_color": 0 }
+        })
+    }
+
+    #[test]
+    fn labels_topic_messages_with_creation_name() {
+        let ch = channel();
+        let msg = ch
+            .parse_update_message(&topic_update(7, "hello", Some(creation(7, "testtopic"))))
+            .unwrap();
+        assert_eq!(msg.reply_target, "-1006061054844:7");
+        assert_eq!(msg.content, "[Topic: testtopic #7] hello");
+    }
+
+    #[test]
+    fn genuine_reply_in_topic_uses_cached_name() {
+        let ch = channel();
+        ch.parse_update_message(&topic_update(9, "first", Some(creation(9, "SNS"))));
+        let reply = serde_json::json!({
+            "message_id": 55, "from": { "username": "alice" }, "text": "earlier"
+        });
+        let msg = ch
+            .parse_update_message(&topic_update(9, "answer", Some(reply)))
+            .unwrap();
+        assert!(
+            msg.content.starts_with("[Topic: SNS #9]"),
+            "{}",
+            msg.content
+        );
+        assert!(msg.content.contains("answer"));
+    }
+
+    #[test]
+    fn rename_wins_over_stale_creation_name() {
+        let ch = channel();
+        let mut rename = topic_update(9, "", None);
+        rename["message"].as_object_mut().unwrap().remove("text");
+        rename["message"]["forum_topic_edited"] = serde_json::json!({ "name": "SNS job" });
+        ch.observe_forum_topic_service(&rename);
+        let msg = ch
+            .parse_update_message(&topic_update(9, "hi", Some(creation(9, "SNS"))))
+            .unwrap();
+        assert_eq!(msg.content, "[Topic: SNS job #9] hi");
+    }
+
+    #[test]
+    fn unknown_topic_and_general_are_unlabelled() {
+        let ch = channel();
+        let msg = ch
+            .parse_update_message(&topic_update(11, "hi", None))
+            .unwrap();
+        assert_eq!(msg.content, "hi");
+        let mut general = topic_update(1, "hi", None);
+        general["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("is_topic_message");
+        let msg = ch.parse_update_message(&general).unwrap();
+        assert_eq!(msg.content, "hi");
+    }
 
     fn options(parent: Option<&str>, name: Option<&str>) -> RoomCreationOptions {
         RoomCreationOptions {
@@ -9347,7 +9555,11 @@ impl Channel for TelegramChannel {
                 "Telegram createForumTopic returned an unreadable response (HTTP {status})"
             )
         })?;
-        Self::forum_topic_room_id(&chat_id, &response_body)
+        let room_id = Self::forum_topic_room_id(&chat_id, &response_body)?;
+        if let Some(name) = body.get("name").and_then(serde_json::Value::as_str) {
+            self.remember_forum_topic_name(room_id.clone(), name, true);
+        }
+        Ok(room_id)
     }
 
     fn self_handle(&self) -> Option<String> {
