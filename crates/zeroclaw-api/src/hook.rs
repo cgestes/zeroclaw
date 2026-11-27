@@ -87,6 +87,19 @@ pub struct FileChangeEvent {
     pub kind: FileChangeKind,
 }
 
+/// Emitted when an agent finishes a conversational turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnEndEvent {
+    /// Agent alias that executed the turn (e.g. `"luc"`, `"family"`).
+    pub agent: String,
+    /// Session identifier for the turn.
+    pub session_id: String,
+    /// Originating channel name (e.g. `"gateway"`, `"telegram"`, `"slack"`).
+    pub channel: String,
+    /// Final response text delivered by the agent.
+    pub response: String,
+}
+
 impl<T> HookResult<T> {
     pub fn is_cancel(&self) -> bool {
         matches!(self, HookResult::Cancel(_))
@@ -165,6 +178,8 @@ pub trait HookHandler: Send + Sync {
     /// Observe a debounced file change from a `[file_watchers.<name>]`
     /// watcher. Fired once per changed file, after the quiet period.
     async fn on_file_changed(&self, _event: &FileChangeEvent) {}
+    /// Observe the completion of an agent turn.
+    async fn on_turn_end(&self, _event: &TurnEndEvent) {}
 
     // --- Modifying hooks (sequential by priority, can cancel) ---
     async fn before_model_resolve(
